@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import oracledb
 from dotenv import load_dotenv
+import datetime
 
 # Load environment variables
 load_dotenv()
@@ -40,16 +41,77 @@ def merge_data():
         df['bank'] = bank_code
         merged_data.append(df)
 
-    return pd.concat(merged_data, ignore_index=True)
+    df = pd.concat(merged_data, ignore_index=True)
+
+    # Use rating_y and date_y as the canonical columns
+    df = df.rename(columns={'rating_y': 'rating', 'date_y': 'date'})
+
+    # Convert date to datetime
+    df['date'] = pd.to_datetime(df['date'], errors='coerce')
+
+    # Diagnose all relevant columns
+    print("Sample data before cleaning:")
+    print(df[['review_id', 'review_text', 'rating',
+          'sentiment_score', 'date', 'bank']].head(10))
+    print("\nData types:")
+    print(df[['review_id', 'review_text', 'rating',
+          'sentiment_score', 'date', 'bank']].dtypes)
+    print("\nNull values:")
+    print(df[['review_id', 'review_text', 'rating',
+          'sentiment_score', 'date', 'bank']].isnull().sum())
+    print("\nUnique values in rating:")
+    print(df['rating'].unique())
+    print("\nUnique values in sentiment_score:")
+    print(df['sentiment_score'].unique())
+    print("\nUnique values in review_text:")
+    print(df['review_text'].unique()[:10])  # First 10 for brevity
+
+    # Clean numeric columns
+    df['rating'] = pd.to_numeric(df['rating'], errors='coerce')
+    df['sentiment_score'] = pd.to_numeric(
+        df['sentiment_score'], errors='coerce')
+
+    # Clean text columns
+    df['review_id'] = df['review_id'].astype(str).replace('nan', 'Unknown_ID')
+    df['review_text'] = df['review_text'].astype(str).replace(
+        'nan', 'No review text')  # Default for missing text
+    df['sentiment_label'] = df['sentiment_label'].astype(
+        str).replace('nan', 'Unknown')
+
+    # Handle NaN for numeric columns
+    # Adjust based on schema (e.g., 3 if non-nullable)
+    df['rating'] = df['rating'].fillna(0)
+    df['sentiment_score'] = df['sentiment_score'].fillna(
+        0.5)  # Neutral value; adjust if needed
+
+    print("\nSample data after cleaning:")
+    print(df[['review_id', 'review_text', 'rating',
+          'sentiment_score', 'date', 'bank']].head(10))
+
+    # Optional: Skip rows with missing review_text if not desired
+    # df = df[df['review_text'] != 'No review text']
+
+    return df
 
 
 def insert_data():
     df = merge_data()
 
     print("✅ Data merged:", df.shape)
+    print("Columns in merged DataFrame:", df.columns.tolist())
+
+    # Connect to Oracle
     conn = oracledb.connect(
         user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
     cursor = conn.cursor()
+
+    # Check table schema for debugging
+    cursor.execute(
+        "SELECT column_name, data_type, nullable FROM user_tab_columns WHERE table_name = 'REVIEWS'")
+    schema = cursor.fetchall()
+    print("\nReviews table schema:")
+    for column in schema:
+        print(column)
 
     # Insert banks if not already there
     bank_names = {
@@ -59,47 +121,68 @@ def insert_data():
     }
 
     bank_id_map = {}
-
     for code, name in bank_names.items():
         cursor.execute(
-            "MERGE INTO banks b USING (SELECT :1 AS name FROM dual) d ON (b.name = d.name) WHEN NOT MATCHED THEN INSERT (name) VALUES (:1)",
-            [name]
+            "MERGE INTO banks b USING (SELECT :name AS name FROM dual) d ON (b.name = d.name) "
+            "WHEN NOT MATCHED THEN INSERT (name) VALUES (:name)",
+            {"name": name}
         )
         conn.commit()
-        cursor.execute("SELECT id FROM banks WHERE name = :1", [name])
+        cursor.execute(
+            "SELECT id FROM banks WHERE name = :name", {"name": name})
         bank_id = cursor.fetchone()[0]
         bank_id_map[code] = bank_id
 
-    # Insert reviews (assuming a reviews table exists with appropriate columns)
+    # Insert reviews
     for index, row in df.iterrows():
-        cursor.execute(
-            """
-            MERGE INTO reviews r
-            USING (SELECT :1 AS review_id, :2 AS review_text, :3 AS sentiment_label, :4 AS sentiment_score,
-                          :5 AS rating, :6 AS date, :7 AS bank_id FROM dual) d
-            ON (r.review_id = d.review_id)
-            WHEN NOT MATCHED THEN
-            INSERT (review_id, review_text, sentiment_label, sentiment_score, rating, date, bank_id)
-            VALUES (:1, :2, :3, :4, :5, :6, :7)
-            """,
-            [
-                row['review_id'],
-                row['review_text'],
-                row['sentiment_label'],
-                row['sentiment_score'],
-                row['rating'],
-                row['date'],
-                bank_id_map[row['bank']]
-            ]
-        )
+        review_date = row['date']
+        if pd.notnull(review_date) and hasattr(review_date, 'date'):
+            review_date = review_date.date()
+        elif pd.isnull(review_date):
+            review_date = None
+
+        # Convert NaN to None for all fields
+        def safe_value(val):
+            if pd.isnull(val):
+                return None
+            return val
+
+        try:
+            cursor.execute(
+                """
+                MERGE INTO reviews r
+                USING (SELECT :review_id AS review_id FROM dual) d
+                ON (r.review_id = d.review_id)
+                WHEN NOT MATCHED THEN
+                INSERT (
+                    review_id, review_text, rating, review_date, bank_name, source, processed_text, identified_theme
+                ) VALUES (
+                    :review_id, :review_text, :rating, :review_date, :bank_name, :source, :processed_text, :identified_theme
+                )
+                """,
+                {
+                    "review_id": safe_value(row['review_id']),
+                    "review_text": safe_value(row['review_text']),
+                    "rating": float(row['rating']) if pd.notnull(row['rating']) else None,
+                    "review_date": review_date,
+                    "bank_name": safe_value(row['bank_name']),
+                    "source": safe_value(row['source']),
+                    "processed_text": safe_value(row['processed_text']),
+                    "identified_theme": safe_value(row['identified_theme'])
+                }
+            )
+        except oracledb.DatabaseError as e:
+            print(f"Error inserting row {index}:")
+            print(f"Row data: {row.to_dict()}")
+            print(f"Error: {e}")
+            raise
 
     conn.commit()
     cursor.close()
     conn.close()
-    print("✅ All reviews inserted.")
+    print("All reviews inserted.")
 
 
 if __name__ == "__main__":
     insert_data()
     print("Starting data insertion...")
-    

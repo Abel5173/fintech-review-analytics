@@ -6,10 +6,10 @@ CREATE TABLE banks (
 CREATE TABLE reviews (
     review_id VARCHAR2(100) PRIMARY KEY,
     review_text VARCHAR2(4000),
-    sentiment_label VARCHAR2(20),
-    sentiment_score NUMBER,
     rating NUMBER,
     review_date DATE,
-    bank_id NUMBER,
-    CONSTRAINT fk_bank FOREIGN KEY (bank_id) REFERENCES banks(id)
-)
+    bank_name VARCHAR2(100),
+    source VARCHAR2(100),
+    processed_text VARCHAR2(4000),
+    identified_theme VARCHAR2(200)
+);
