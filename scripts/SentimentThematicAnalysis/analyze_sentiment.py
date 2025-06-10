@@ -45,22 +45,17 @@ def analyze_sentiment(reviews_df):
                                                batch_size].fillna('').astype(str).tolist()
         results = sentiment_analyzer(batch)
         for j, result in enumerate(results):
-            review_id = reviews_df.iloc[i +
-                                        j]['review_id'] if 'review_id' in reviews_df else i + j
-            sentiment_label = result[0]['label']
-            sentiment_score = result[0]['score']
-            bank = reviews_df.iloc[i +
-                                   j]['bank'] if 'bank' in reviews_df else 'Unknown'
-            rating = reviews_df.iloc[i +
-                                     j]['rating'] if 'rating' in reviews_df else None
+            review_row = reviews_df.iloc[i + j]
             sentiments.append({
-                'review_id': review_id,
+                'review_id': review_row.get('review_id', i + j),
                 'review_text': batch[j],
-                'sentiment_label': sentiment_label,
-                'sentiment_score': sentiment_score,
-                'bank': bank,
-                'rating': rating
+                'sentiment_label': result[0]['label'],
+                'sentiment_score': result[0]['score'],
+                'bank': review_row.get('bank', 'Unknown'),
+                'rating': review_row.get('rating'),
+                'date': review_row.get('date') 
             })
+
         logging.info(f"Processed batch {i//batch_size + 1} of reviews")
 
     return pd.DataFrame(sentiments)
