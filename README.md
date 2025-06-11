@@ -1,5 +1,3 @@
-# README.md
-
 # Fintech Review Analytics
 
 This project provides a complete pipeline for scraping, preprocessing, analyzing, and visualizing user reviews of major Ethiopian fintech mobile banking apps from the Google Play Store. The workflow includes data collection, cleaning, quality assessment, sentiment analysis, thematic keyword extraction, and comprehensive reporting.
